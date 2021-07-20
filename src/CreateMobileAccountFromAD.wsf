@@ -1,0 +1,161 @@
+<job id="Includer">
+	<script language="VBScript">
+	'CreateMobileAccountFromAD.wsf
+	'Auteur : Arnaud d'Alayer
+	'Version : 2021-07-20
+	'Licence : https://creativecommons.org/licenses/by-nc/4.0/
+	
+	'déterminer si un tableau est vide
+	Function IsArrayEmpty(ATester())
+		IsArrayEmpty = Len(Join(ATester,"")) = 0
+	End Function 
+	
+	
+	'Trier un tableau par ordre alphabétique
+	Sub TrierTableau(ByRef ATrier())
+		Dim i, j
+		Dim tempo
+		
+		if not IsArrayEmpty(ATrier) then
+			For i = 0 to UBound(ATrier)
+				For j = i + 1 to UBound(ATrier)
+					if ATrier(i) > ATrier(j) then
+						tempo     = ATrier(j)
+						ATrier(j) = ATrier(i)
+						ATrier(i) = tempo
+					end if
+				Next
+			Next
+		end if
+	End Sub
+	
+	
+	'Supprimer les doublons d'un tableau
+	Sub supprimerDoublons(ByRef ATester())
+		
+		if not IsArrayEmpty(ATester) then
+			TrierTableau ATester
+			if UBound(ATester) > 1 then
+			
+				dim i, j
+				for i = UBound(ATester) to 1 step -1
+				
+					if ATester(i) = ATester(i-1) then
+						'décaller vers le bas les enregistrements supérieurs
+						For j = i to UBound(ATester)-1
+							ATester(j) = ATester(j+1)
+						Next
+						Redim Preserve ATester(UBound(ATester) - 1)
+						
+					end if
+				
+				Next
+				
+			end if ' >1
+		end if ' IsArrayEmpty
+		
+	End sub
+	
+	
+	'Parcourir un groupe du domaine et ajouter le username dans tableauUtilisateurs
+	Sub parcourirGroupe(byVal subOUdomaine, byVal subOUdepartement, byVal subnomGroupe, ByRef tableauUtilisateurs)
+		Dim requete
+		Dim fichierOutContent
+		
+		requete = "LDAP://CN=" & subnomGroupe & "," & subOUdepartement & "," & subOUdomaine
+		
+		On Error Resume Next
+		Set objGroup = GetObject(requete)
+		
+		If Err.Number = 0 Then
+			Set memberList = objGroup.Members
+			
+			dim m, CN
+			For Each m In memberList
+				'parcourir les groupes imbriqués
+				If m.Class = "user" then
+					CN = mid(m.Name, 4)
+					'Ajouter au tableau
+					ReDim Preserve tableauUtilisateurs(UBound(tableauUtilisateurs) + 1)
+					tableauUtilisateurs(UBound(tableauUtilisateurs)) = CN
+				end if
+			Next
+		end if
+		
+	end Sub
+	
+	
+	'Créer un script pour créer ou détruire les profils sur un Mac (mode = create | delete)
+	Sub creerScriptProfils(ByVal mode,ByRef tableauUtilisateurs, ByRef fichier)
+		Const ForWriting = 2
+		
+		dim fso
+		Set fso = CreateObject("Scripting.FileSystemObject")
+		If fso.FileExists(fichier) Then
+			fso.DeleteFile fichier
+		end if
+		
+		Dim FichierOutFSO
+		Set FichierOutFSO = fso.OpenTextFile(fichier, ForWriting, True)
+		
+		FichierOutFSO.Write "#!/bin/bash" & chr(10)
+		FichierOutFSO.Write "# " & fichier & chr(10)
+		FichierOutFSO.Write "# Script pour automatiser la création de comptes mobiles sur Mac" & chr(10)
+		FichierOutFSO.Write "" & chr(10)
+		
+		'Source https://gist.github.com/rtrouton/3ac68ac3770ab23ebae354c581f526b7
+		FichierOutFSO.Write "RunAsRoot()" & chr(10)
+		FichierOutFSO.Write "{" & chr(10)
+		FichierOutFSO.Write "##  Pass in the full path to the executable as $1" & chr(10)
+		FichierOutFSO.Write "    if [[ ""${USER}"" != ""root"" ]] ; then" & chr(10)
+		FichierOutFSO.Write "            /bin/echo" & chr(10)
+		FichierOutFSO.Write "            /bin/echo ""***  This application must be run as root.  Please authenticate below.  ***""" & chr(10)
+		FichierOutFSO.Write "            /bin/echo" & chr(10)
+		FichierOutFSO.Write "            sudo ""${1}"" && exit 0" & chr(10)
+		FichierOutFSO.Write "    fi" & chr(10)
+		FichierOutFSO.Write "}" & chr(10)
+		FichierOutFSO.Write "RunAsRoot ""${0}""" & chr(10)
+		
+		Select Case mode
+		Case "create"
+			for i=0 to (UBound(tableauUtilisateurs))
+				FichierOutFSO.Write "sudo /System/Library/CoreServices/ManagedClient.app/Contents/Resources/createmobileaccount -D -n " & tableauUtilisateurs(i) & chr(10)
+			next
+		Case "delete"
+			for i=0 to (UBound(tableauUtilisateurs))
+				FichierOutFSO.Write "sudo dscl . delete /Users/" & tableauUtilisateurs(i) & chr(10)
+				FichierOutFSO.Write "sudo rm -rf /Users/" & tableauUtilisateurs(i) & chr(10)
+			next
+		End Select
+		
+		FichierOutFSO.Write "exit 0" & chr(10)
+		FichierOutFSO.close
+	end Sub
+	
+	
+	'OBTENIR LA LISTE DES MEMBRES
+	dim OUdomaine
+	dim OUdepartement
+	dim OUgrouper
+	dim objGroup
+	dim memberList
+	OUdomaine = "DC=contoso,DC=com"
+	
+	'CONSTRUIRE TABLEAU DES UTILISATEURS
+	dim tableauUtilisateurs : tableauUtilisateurs = Array()
+	'GROUPES A INCLURE
+	OUdepartement = "OU=Test,OU=People"
+	parcourirGroupe OUdomaine, OUdepartement, "aGroup", tableauUtilisateurs
+	parcourirGroupe OUdomaine, OUdepartement, "anOtherGroup", tableauUtilisateurs
+	
+	'FAIRE LE MÉNAGE DANS LE TABLEAU (TRIER ET SUPPRIMER DOUBLONS)
+	supprimerDoublons tableauUtilisateurs
+	
+	'ÉCRITURE DU FICHIER DE CREATION
+	creerScriptProfils "create", tableauUtilisateurs, "createProfil.command"
+	'ÉCRITURE DU FICHIER DE SUPPRESSION
+	creerScriptProfils "delete", tableauUtilisateurs, "deleteProfil.command"
+	
+	
+  </script>
+</job>
